@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Deriv Match Analysis Bot</title>
+<style>
+    body { font-family: Arial; background:#111; color:#fff; text-align:center; }
+    button { padding:10px 20px; margin:10px; font-size:16px; }
+    #log { height:250px; overflow:auto; border:1px solid #444; padding:10px; }
+</style>
+</head>
+<body>
+
+<h2>📊 Match Analysis Bot (2 Tick Strategy)</h2>
+
+<button onclick="startBot()">Start Bot</button>
+<button onclick="stopBot()">Stop Bot</button>
+
+<div id="log"></div>
+
+<script>
+const token = "YOUR_API_TOKEN"; // 🔴 PUT YOUR DERIV TOKEN HERE
+const app_id = 1089;
+
+let ws;
+let running = false;
+
+let digitCounts = Array(10).fill(0);
+let totalTicks = 0;
+let cooldown = 0;
+
+function log(msg) {
+    document.getElementById("log").innerHTML += msg + "<br>";
+}
+
+function startBot() {
+    ws = new WebSocket(`wss://ws.derivws.com/websockets/v3?app_id=${app_id}`);
+
+    ws.onopen = () => {
+        ws.send(JSON.stringify({ authorize: token }));
+    };
+
+    ws.onmessage = (msg) => {
+        let data = JSON.parse(msg.data);
+
+        if (data.msg_type === "authorize") {
+            log("✅ Authorized");
+            ws.send(JSON.stringify({ ticks: "R_100" }));
+            running = true;
+        }
+
+        if (data.msg_type === "tick" && running) {
+            let quote = data.tick.quote.toString();
+            let lastDigit = parseInt(quote.slice(-1));
+
+            digitCounts[lastDigit]++;
+            totalTicks++;
+
+            log(`Tick: ${quote} | Digit: ${lastDigit}`);
+
+            if (cooldown > 0) {
+                cooldown--;
+                return;
+            }
+
+            if (totalTicks >= 50) {
+                analyzeAndTrade();
+            }
+        }
+
+        if (data.msg_type === "buy") {
+            log("🚀 Trade Placed!");
+        }
+    };
+}
+
+function analyzeAndTrade() {
+    let percentages = digitCounts.map(c => (c / totalTicks) * 100);
+
+    let digits = percentages.map((p, i) => ({
+        digit: i,
+        percent: p
+    }));
+
+    digits.sort((a, b) => b.percent - a.percent);
+
+    let highest = digits[0];
+    let second = digits[1];
+
+    log(`🔥 Highest: ${highest.digit} (${highest.percent.toFixed(2)}%)`);
+    log(`🎯 Entry Digit: ${second.digit} (${second.percent.toFixed(2)}%)`);
+
+    // FILTERS
+    if (second.percent < 12) {
+        log("❌ Skipped: Weak signal");
+        resetData();
+        return;
+    }
+
+    if (Math.abs(highest.percent - second.percent) < 1) {
+        log("❌ Skipped: Too close");
+        resetData();
+        return;
+    }
+
+    placeTrade(second.digit);
+
+    cooldown = 5;
+    resetData();
+}
+
+function placeTrade(digit) {
+    ws.send(JSON.stringify({
+        buy: 1,
+        price: 1,
+        parameters: {
+            amount: 1,
+            basis: "stake",
+            contract_type: "DIGITMATCH",
+            currency: "USD",
+            duration: 2,
+            duration_unit: "t",
+            symbol: "R_100",
+            barrier: digit.toString()
+        }
+    }));
+}
+
+function resetData() {
+    digitCounts = Array(10).fill(0);
+    totalTicks = 0;
+}
+
+function stopBot() {
+    running = false;
+    ws.close();
+    log("⛔ Bot Stopped");
+}
+</script>
+
+</body>
+</html>
